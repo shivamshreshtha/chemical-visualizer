@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Chemical Equipment Visualizer</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    body{ font-family: Arial; background:#f4f6f8; padding:40px; }
+    h1{ text-align:center; margin:0; }
+    .sub { text-align:center; color:#d00; margin: 6px 0 18px; font-weight:700; }
+
+    .box{
+      background:white;
+      padding:20px;
+      max-width:1100px;
+      margin:auto;
+      border-radius:10px;
+      box-shadow:0 0 10px rgba(0,0,0,0.1);
+    }
+
+    .row{ display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin: 10px 0; }
+    input[type="text"]{ width:520px; padding:10px; border:1px solid #ccc; border-radius:8px; }
+    input[type="file"]{ padding:10px; }
+
+    button{
+      padding:10px 16px;
+      background:#28a745;
+      border:none;
+      color:white;
+      cursor:pointer;
+      border-radius:8px;
+      font-weight:600;
+    }
+    button:hover{ background:#218838; }
+
+    button.secondary{ background:#007bff; }
+    button.secondary:hover{ background:#005dc1; }
+
+    button.dark{ background:#0d6efd; }
+    button.dark:hover{ background:#0b5ed7; }
+
+    #status{ margin-top: 8px; font-weight: 700; }
+    #status.ok{ color:#0a7a2f; }
+    #status.bad{ color:#c00; }
+
+    table{ width:100%; border-collapse:collapse; margin-top:16px; }
+    th,td{ border:1px solid #ddd; padding:8px; text-align:center; }
+    th{ background:#007bff; color:white; }
+
+    canvas{ margin-top:18px; background:#fff; border:1px solid #eee; border-radius:8px; padding:10px; }
+
+    .history{
+      margin-top:18px;
+      padding:12px;
+      background:#fafafa;
+      border:1px solid #eee;
+      border-radius:10px;
+    }
+    .history-item{
+      display:flex;
+      justify-content:space-between;
+      align-items:center;
+      gap:12px;
+      padding:10px 8px;
+      border-bottom:1px solid #eee;
+    }
+    .history-item:last-child{ border-bottom:none; }
+    .muted{ color:#666; font-size:13px; font-weight:500; }
+  </style>
+</head>
+
+<body>
+  <h1>Chemical Equipment Parameter Visualizer</h1>
+  <div class="sub">FINAL VERSION ✅ (Upload + Charts + History + PDF Download)</div>
+
+  <div class="box">
+
+    <div class="row">
+      <label><b>Token:</b></label>
+      <input id="tokenInput" type="text" placeholder="Paste Token here" />
+      <button class="secondary" type="button" onclick="testToken()">Test Token</button>
+      <button class="dark" type="button" onclick="loadHistory()">Refresh History</button>
+    </div>
+
+    <div class="row">
+      <input type="file" id="csvFile" accept=".csv" />
+      <button type="button" onclick="uploadCSV()">Upload CSV</button>
+      <button class="dark" type="button" onclick="downloadLatestPDF()">Download Latest PDF</button>
+    </div>
+
+    <div class="row">
+      <input id="pdfId" type="text" placeholder="Dataset ID for PDF (example: 3)" />
+      <button class="dark" type="button" onclick="downloadPDFById()">Download PDF by ID</button>
+    </div>
+
+    <div id="status" class="muted">Tip: browser me /api/history kholne par 401 normal hai (token header nahi hota).</div>
+
+    <div id="result"></div>
+
+    <canvas id="flowChart"></canvas>
+    <canvas id="typeChart"></canvas>
+
+    <div class="history">
+      <h3 style="margin:0 0 10px;">Last 5 Uploads</h3>
+      <div id="historyBox" class="muted">Click “Refresh History”</div>
+    </div>
+
+  </div>
+
+<script>
+  const API_UPLOAD  = "http://127.0.0.1:8000/api/upload/";
+  const API_HISTORY = "http://127.0.0.1:8000/api/history/";
+  const API_REPORT_BY_ID = (id) => `http://127.0.0.1:8000/api/report/${id}/`;
+  const API_REPORT_LATEST = "http://127.0.0.1:8000/api/report/latest/"; // if you add latest endpoint later
+
+  let flowChart = null;
+  let typeChart = null;
+
+  function setStatus(msg, ok=true){
+    const el = document.getElementById("status");
+    el.className = ok ? "ok" : "bad";
+    el.textContent = msg;
+  }
+
+  function getToken(){
+    return document.getElementById("tokenInput").value.trim();
+  }
+
+  function authHeaders(){
+    const token = getToken();
+    return {
+      "Authorization": "Token " + token,
+      "Accept": "application/json"
+    };
+  }
+
+  async function testToken(){
+    const token = getToken();
+    if(!token) return alert("Paste token first");
+
+    setStatus("Testing token...", true);
+
+    try{
+      const res = await fetch(API_HISTORY, { headers: authHeaders() });
+      if(!res.ok){
+        setStatus(`❌ Token failed (HTTP ${res.status})`, false);
+        return;
+      }
+      setStatus("✅ Token OK (history accessible).", true);
+      loadHistory();
+    } catch(e){
+      setStatus("❌ Token test error: " + e.message, false);
+    }
+  }
+
+  async function uploadCSV(){
+    const token = getToken();
+    if(!token) return alert("Paste token first");
+
+    const file = document.getElementById("csvFile").files[0];
+    if(!file) return alert("Please select a CSV file");
+
+    setStatus("Uploading CSV...", true);
+    document.getElementById("result").innerHTML = "";
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try{
+      const res = await fetch(API_UPLOAD, {
+        method: "POST",
+        headers: authHeaders(),
+        body: formData
+      });
+
+      if(!res.ok){
+        const t = await res.text();
+        console.error(t);
+        setStatus(`❌ Upload failed (HTTP ${res.status})`, false);
+        alert("Upload Failed: " + res.status);
+        return;
+      }
+
+      const data = await res.json();
+      setStatus("✅ Upload OK", true);
+      renderAll(data);
+      loadHistory();
+    } catch(e){
+      setStatus("❌ Upload error: " + e.message, false);
+    }
+  }
+
+  function renderAll(data){
+    showTableAndStats(data);
+    drawCharts(data);
+  }
+
+  function showTableAndStats(data){
+    let html = `<h3>Rows: ${data.rows}</h3>`;
+
+    html += "<table><tr>";
+    (data.columns || []).forEach(col => html += `<th>${col}</th>`);
+    html += "</tr>";
+
+    (data.preview || []).forEach(row => {
+      html += "<tr>";
+      row.forEach(cell => html += `<td>${cell}</td>`);
+      html += "</tr>";
+    });
+    html += "</table>";
+
+    if(data.averages){
+      html += `
+        <h3>Averages</h3>
+        <ul>
+          <li>Flowrate: ${Number(data.averages.flowrate).toFixed(2)}</li>
+          <li>Pressure: ${Number(data.averages.pressure).toFixed(2)}</li>
+          <li>Temperature: ${Number(data.averages.temperature).toFixed(2)}</li>
+        </ul>
+      `;
+    }
+
+    if(data.equipment_distribution){
+      html += "<h3>Equipment Distribution</h3><ul>";
+      Object.keys(data.equipment_distribution).forEach(k => {
+        html += `<li>${k}: ${data.equipment_distribution[k]}</li>`;
+      });
+      html += "</ul>";
+    }
+
+    document.getElementById("result").innerHTML = html;
+  }
+
+  function drawCharts(data){
+    if(flowChart) flowChart.destroy();
+    if(typeChart) typeChart.destroy();
+
+    const names = (data.preview || []).map(r => r[0]);
+    const flowrates = (data.preview || []).map(r => r[2]);
+
+    flowChart = new Chart(document.getElementById("flowChart"), {
+      type: "bar",
+      data: { labels: names, datasets: [{ label: "Flowrate", data: flowrates }] }
+    });
+
+    const types = Object.keys(data.equipment_distribution || {});
+    const counts = Object.values(data.equipment_distribution || {});
+
+    typeChart = new Chart(document.getElementById("typeChart"), {
+      type: "pie",
+      data: { labels: types, datasets: [{ label: "Equipment Types", data: counts }] }
+    });
+  }
+
+  async function loadHistory(){
+    const token = getToken();
+    if(!token) return alert("Paste token first");
+
+    setStatus("Loading history...", true);
+
+    try{
+      const res = await fetch(API_HISTORY, { headers: authHeaders() });
+      if(!res.ok){
+        setStatus(`❌ History failed (HTTP ${res.status})`, false);
+        return;
+      }
+
+      const list = await res.json();
+      const box = document.getElementById("historyBox");
+
+      if(!list.length){
+        box.innerHTML = "No uploads found. Upload CSV first.";
+        setStatus("✅ History loaded (empty).", true);
+        return;
+      }
+
+      box.innerHTML = list.map(item => `
+        <div class="history-item">
+          <div>
+            <b>ID:</b> ${item.id} |
+            <b>File:</b> ${item.filename} |
+            <b>Rows:</b> ${item.rows}
+            <div class="muted">${item.created_at}</div>
+          </div>
+          <div>
+            <button class="dark" onclick="downloadPDF(${item.id})">Download PDF</button>
+          </div>
+        </div>
+      `).join("");
+
+      setStatus("✅ History loaded.", true);
+    } catch(e){
+      setStatus("❌ History error: " + e.message, false);
+    }
+  }
+
+  async function downloadPDF(id){
+    const token = getToken();
+    if(!token) return alert("Paste token first");
+
+    try{
+      const res = await fetch(API_REPORT_BY_ID(id), { headers: authHeaders() });
+      if(!res.ok){
+        alert("PDF download failed: " + res.status);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `report_${id}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch(e){
+      alert("PDF error: " + e.message);
+    }
+  }
+
+  function downloadPDFById(){
+    const id = document.getElementById("pdfId").value.trim();
+    if(!id) return alert("Enter dataset ID (like 3)");
+    downloadPDF(id);
+  }
+
+  // Optional: if you add /api/report/latest/ endpoint later
+  async function downloadLatestPDF(){
+    const token = getToken();
+    if(!token) return alert("Paste token first");
+    try{
+      const res = await fetch(API_REPORT_LATEST, { headers: authHeaders() });
+      if(!res.ok){
+        alert("Latest PDF endpoint not available (HTTP " + res.status + "). Use Download PDF by ID instead.");
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "equipment_report_latest.pdf";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch(e){
+      alert("Latest PDF error: " + e.message);
+    }
+  }
+</script>
+
+</body>
+</html>
